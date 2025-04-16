@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Ant Simulation (ABM + Canvas)</title>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #111; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<canvas id="antCanvas"></canvas>
+<script>
+// --- Simulation Parameters ---
+const NUM_ANTS = 100;
+const ANT_SPEED = 1.5;
+const SPEED_VARIANCE = 0.5; // Standard deviation for speed (Gaussian)
+const ANT_SIZE = 6;
+const WANDER_STRENGTH = 0.3;
+const BOUNDARY_TURN_STRENGTH = 2;
+const ARENA_PADDING = 20;
+const BOUNDARY_TURN_NOISE = 0.2;
+
+// --- Global Variables ---
+let ants = [];
+let arenaRadius;
+let centerX, centerY;
+let canvas, ctx;
+
+function calculateArena() {
+  centerX = window.innerWidth / 2;
+  centerY = window.innerHeight / 2;
+  arenaRadius = Math.min(centerX, centerY) - ARENA_PADDING;
+}
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  calculateArena();
+}
+
+function randomGaussian(mean = 0, stddev = 1) {
+  // Box-Muller transform
+  let u = 0, v = 0;
+  while(u === 0) u = Math.random();
+  while(v === 0) v = Math.random();
+  return mean + stddev * Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+function init() {
+  canvas = document.getElementById('antCanvas');
+  ctx = canvas.getContext('2d');
+  resizeCanvas();
+  ants = [];
+  for (let i = 0; i < NUM_ANTS; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.random() * arenaRadius * 0.9;
+    const startX = centerX + Math.cos(angle) * radius;
+    const startY = centerY + Math.sin(angle) * radius;
+    // Gaussian distributed speed, clamp to minimum 0.2
+    let speed = Math.max(0.2, randomGaussian(ANT_SPEED, SPEED_VARIANCE));
+    ants.push({
+      x: startX,
+      y: startY,
+      angle: Math.random() * Math.PI * 2,
+      speed: speed,
+      pause: 0 // pause timer in frames
+    });
+  }
+}
+
+function drawArena() {
+  ctx.save();
+  ctx.globalAlpha = 0.2;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, arenaRadius, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.restore();
+}
+
+function updateAnts() {
+  // Head-to-head pause detection
+  for (let i = 0; i < ants.length; i++) {
+    const antA = ants[i];
+    if (antA.pause > 0) continue;
+    // Ant head position
+    const ax = antA.x + Math.cos(antA.angle) * ANT_SIZE;
+    const ay = antA.y + Math.sin(antA.angle) * ANT_SIZE;
+    for (let j = i + 1; j < ants.length; j++) {
+      const antB = ants[j];
+      if (antB.pause > 0) continue;
+      const bx = antB.x + Math.cos(antB.angle) * ANT_SIZE;
+      const by = antB.y + Math.sin(antB.angle) * ANT_SIZE;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const distSq = dx * dx + dy * dy;
+      const headDist = ANT_SIZE * 1.5;
+      if (distSq < headDist * headDist) {
+        // Pause both ants for 10-30 frames
+        antA.pause = 10 + Math.floor(Math.random() * 40);
+        antB.pause = 10 + Math.floor(Math.random() * 40);
+      }
+    }
+  }
+
+  for (let i = 0; i < ants.length; i++) {
+    const ant = ants[i];
+    if (ant.pause > 0) {
+      ant.pause--;
+      continue;
+    }
+    // Wander
+    ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
+    // Move
+    const vx = Math.cos(ant.angle) * ant.speed;
+    const vy = Math.sin(ant.angle) * ant.speed;
+    ant.x += vx;
+    ant.y += vy;
+    // Boundary check
+    const dx = ant.x - centerX;
+    const dy = ant.y - centerY;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > (arenaRadius - ANT_SIZE) * (arenaRadius - ANT_SIZE)) {
+      const dist = Math.sqrt(distSq);
+      const overlap = dist - (arenaRadius - ANT_SIZE);
+      ant.x -= dx / dist * overlap;
+      ant.y -= dy / dist * overlap;
+      // Set angle to be parallel to the tangent at the boundary point,
+      // choosing the tangent direction closest to the current angle, with some noise
+      const angleToCenter = Math.atan2(dy, dx);
+      const tangent1 = angleToCenter + Math.PI / 2;
+      const tangent2 = angleToCenter - Math.PI / 2;
+      // Find which tangent is closer to the current angle
+      const delta1 = Math.abs(((tangent1 - ant.angle + Math.PI) % (2 * Math.PI)) - Math.PI);
+      const delta2 = Math.abs(((tangent2 - ant.angle + Math.PI) % (2 * Math.PI)) - Math.PI);
+      let newAngle = delta1 < delta2 ? tangent1 : tangent2;
+      // Add adjustable noise
+      newAngle += (Math.random() - 0.5) * BOUNDARY_TURN_NOISE;
+      ant.angle = newAngle;
+    }
+  }
+
+  // --- Collision avoidance: prevent overlap ---
+  for (let i = 0; i < ants.length; i++) {
+    for (let j = i + 1; j < ants.length; j++) {
+      const a = ants[i];
+      const b = ants[j];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distSq = dx * dx + dy * dy;
+      const minDist = ANT_SIZE * 2;
+      if (distSq < minDist * minDist && distSq > 0.0001) {
+        const dist = Math.sqrt(distSq);
+        const overlap = (minDist - dist) / 2;
+        const ox = dx / dist * overlap;
+        const oy = dy / dist * overlap;
+        a.x -= ox;
+        a.y -= oy;
+        b.x += ox;
+        b.y += oy;
+      }
+    }
+  }
+}
+
+function drawAnts() {
+  ctx.save();
+  ctx.fillStyle = '#FFFF00';
+  for (let i = 0; i < ants.length; i++) {
+    const ant = ants[i];
+    // Draw a triangle pointing in the direction of ant.angle
+    ctx.save();
+    ctx.translate(ant.x, ant.y);
+    ctx.rotate(ant.angle);
+    ctx.beginPath();
+    // Triangle: tip at (ANT_SIZE, 0), base at (-ANT_SIZE, -ANT_SIZE/1.5) and (-ANT_SIZE, +ANT_SIZE/1.5)
+    ctx.moveTo(ANT_SIZE, 0);
+    ctx.lineTo(-ANT_SIZE, -ANT_SIZE / 1.5);
+    ctx.lineTo(-ANT_SIZE, ANT_SIZE / 1.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function loop() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawArena();
+  updateAnts();
+  drawAnts();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  // Optionally, reposition ants or let them adapt
+});
+
+init();
+loop();
+</script>
+</body>
+</html>
