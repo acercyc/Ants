@@ -20,19 +20,34 @@ const WANDER_STRENGTH = 0.3;
 const BOUNDARY_TURN_STRENGTH = 2;
 const ARENA_PADDING = 20;
 const BOUNDARY_TURN_NOISE = 0.2;
+// new: head‑to‑head collision distance multiplier (times ANT_SIZE)
+const HEAD_COLLIDE_MULTIPLIER = 2;
+const GOSSIP_TURN_NOISE = 0.8;
 const PAUSE_TIME_MIN = 20; // Minimum pause frames
 const PAUSE_TIME_MAX = 80; // Maximum additional random pause frames
 const INFO_BUFFER_MAX = 100;
-const INFO_EXCHANGE_AMOUNT = 10;
+const INFO_EXCHANGE_AMOUNT = 5;
 const GOSSIP_RANGE = ANT_SIZE * 6;
 const INFO_ACCUM_RATE = 0.1; // <--- How quickly distance accumulates information
-const GOSSIP_MEMORY_SIZE = 3;  // <--- max number of partners remembered
+const GOSSIP_MEMORY_SIZE = 8;  // <--- max number of partners remembered
+// new: how many recent pause‐partners to remember
+const PAUSE_MEMORY_SIZE = 8
+
+// add two distinct pause durations
+const PAUSE_TIME_EXPLORATION = 5; // shorter pause when exploring
+const PAUSE_TIME_GOSSIP      = 60; // longer pause when gossiping
+
+// new: vision cone in degrees & radians
+const VISUAL_ANGLE_DEG = 120;
+const VISUAL_ANGLE     = VISUAL_ANGLE_DEG * Math.PI / 180;
 
 // --- Global Variables ---
 let ants = [];
 let arenaRadius;
 let centerX, centerY;
 let canvas, ctx;
+// add a global time‑step counter
+let timeStep = 0;
 
 function calculateArena() {
   centerX = window.innerWidth / 2;
@@ -75,7 +90,9 @@ function init() {
       // --- Information vehicle properties ---
       infoBuffer: 0,
       state: "exploration", // or "gossip"
-      gossipPartners: []  // use array as queue
+      gossipPartners: [],
+      pausePartners: [],    // <--- track recent head‐to‐head pauses
+      visualAngle: VISUAL_ANGLE
     });
   }
 }
@@ -94,22 +111,35 @@ function updateAnts() {
   // Head-to-head pause detection + info exchange
   for (let i = 0; i < ants.length; i++) {
     const antA = ants[i];
-    if (antA.pause > 0) continue;
     const ax = antA.x + Math.cos(antA.angle) * ANT_SIZE;
     const ay = antA.y + Math.sin(antA.angle) * ANT_SIZE;
     for (let j = i + 1; j < ants.length; j++) {
       const antB = ants[j];
-      if (antB.pause > 0) continue;
       const bx = antB.x + Math.cos(antB.angle) * ANT_SIZE;
       const by = antB.y + Math.sin(antB.angle) * ANT_SIZE;
       const dx = bx - ax;
       const dy = by - ay;
       const distSq = dx*dx + dy*dy;
-      const headDist = ANT_SIZE * 1.5;
-      if (distSq < headDist*headDist) {
-        // pause both
-        antA.pause = PAUSE_TIME_MIN + Math.floor(Math.random()*PAUSE_TIME_MAX);
-        antB.pause = PAUSE_TIME_MIN + Math.floor(Math.random()*PAUSE_TIME_MAX);
+      const headDist = ANT_SIZE * HEAD_COLLIDE_MULTIPLIER;
+      if (
+        distSq < headDist*headDist &&
+        !antA.pausePartners.includes(j) &&    // skip if just paused with B
+        !antB.pausePartners.includes(i)
+      ) {
+        // if either is exploring, use exploration pause for both
+        if (antA.state === "exploration" || antB.state === "exploration") {
+          antA.pause = PAUSE_TIME_EXPLORATION;
+          antB.pause = PAUSE_TIME_EXPLORATION;
+        } else {
+          antA.pause = PAUSE_TIME_GOSSIP;
+          antB.pause = PAUSE_TIME_GOSSIP;
+        }
+
+        // record each other to avoid immediate re‑pausing
+        if (antA.pausePartners.length >= PAUSE_MEMORY_SIZE) antA.pausePartners.shift();
+        antA.pausePartners.push(j);
+        if (antB.pausePartners.length >= PAUSE_MEMORY_SIZE) antB.pausePartners.shift();
+        antB.pausePartners.push(i);
 
         // --- info exchange on head-to-head meet ---
         if (
@@ -160,6 +190,13 @@ function updateAnts() {
         if (i === j) continue;
         const antB = ants[j];
         if (ant.gossipPartners.includes(j)) continue;
+        // --- enforce visual cone ---
+        const toB = Math.atan2(antB.y - ant.y, antB.x - ant.x);
+        let dAng = toB - ant.angle;
+        while (dAng > Math.PI)  dAng -= 2 * Math.PI;
+        while (dAng < -Math.PI) dAng += 2 * Math.PI;
+        if (Math.abs(dAng) > ant.visualAngle / 2) continue;
+
         const dx = antB.x - ant.x;
         const dy = antB.y - ant.y;
         const distSq = dx * dx + dy * dy;
@@ -176,20 +213,14 @@ function updateAnts() {
           targetIdx = j;
         }
       }
-      // If already exchanged with all possible, wander
       if (target) {
-        // If already close enough to exchange, don't keep sticking, look for next
-        if (Math.sqrt(minDist) < GOSSIP_RANGE * 1.1) {
-          // Already close, so don't move toward this target anymore
-          ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
-        } else {
-          // Turn toward closest target
-          const desiredAngle = Math.atan2(target.y - ant.y, target.x - ant.x);
-          let da = desiredAngle - ant.angle;
-          while (da > Math.PI) da -= 2 * Math.PI;
-          while (da < -Math.PI) da += 2 * Math.PI;
-          ant.angle += da * 0.2;
-        }
+        // Turn toward closest target, plus adjustable noise
+        const desiredAngle = Math.atan2(target.y - ant.y, target.x - ant.x);
+        let da = desiredAngle - ant.angle;
+        while (da > Math.PI) da -= 2 * Math.PI;
+        while (da < -Math.PI) da += 2 * Math.PI;
+        ant.angle += da * 0.2
+          + (Math.random() - 0.5) * GOSSIP_TURN_NOISE;
       } else {
         // Wander if no target
         ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
@@ -260,21 +291,15 @@ function drawAnts() {
     // Color by state and infoBuffer
     let color;
     if (ant.state === "exploration") {
-      // Blue (hue 220, low buffer) to White (high buffer)
       const t = ant.infoBuffer / INFO_BUFFER_MAX;
-      // t=0: blue (220,100%,50%), t=1: white (any hue,0%,100%)
-      const hue = 220;
-      const sat = 100 * (1 - t);
-      const light = 50 + 50 * t;
-      color = `hsl(${hue}, ${sat}%, ${light}%)`;
+      // blue (220°) → purple (280°)
+      const hue = 220 + 60 * t;
+      color = `hsl(${hue}, 100%, 50%)`;
     } else if (ant.state === "gossip") {
-      // White (low buffer) to Red (hue 0, high buffer)
       const t = ant.infoBuffer / INFO_BUFFER_MAX;
-      // Interpolate from white (0,0%,100%) to red (0,100%,50%)
-      const hue = 0;
-      const sat = 100 * t;
-      const light = 100 - 50 * t;
-      color = `hsl(${hue}, ${sat}%, ${light}%)`;
+      // yellow (60°) at low buffer → red (0°) at high buffer
+      const hue = 60 * (1 - t);
+      color = `hsl(${hue}, 100%, 50%)`;
     } else {
       color = "#FFFF00";
     }
@@ -296,7 +321,15 @@ function drawAnts() {
 }
 
 function loop() {
+  // increment and draw time step
+  timeStep++;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  ctx.font = '16px sans-serif';
+  ctx.fillText('Time: ' + timeStep, 10, 20);
+  ctx.restore();
+
   drawArena();
   updateAnts();
   drawAnts();
@@ -313,4 +346,3 @@ loop();
 </script>
 </body>
 </html>
-`
