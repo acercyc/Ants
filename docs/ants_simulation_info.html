@@ -13,15 +13,20 @@
 <script>
 // --- Simulation Parameters ---
 const NUM_ANTS = 100;
-const ANT_SPEED = 1.5;
-const SPEED_VARIANCE = 0.5; // Standard deviation for speed (Gaussian)
+const ANT_SPEED = 2;
+const SPEED_VARIANCE = 0.7; // Standard deviation for speed (Gaussian)
 const ANT_SIZE = 8;
 const WANDER_STRENGTH = 0.3;
 const BOUNDARY_TURN_STRENGTH = 2;
 const ARENA_PADDING = 20;
 const BOUNDARY_TURN_NOISE = 0.2;
-const PAUSE_TIME_MIN = 10; // Minimum pause frames
-const PAUSE_TIME_MAX = 60; // Maximum additional random pause frames
+const PAUSE_TIME_MIN = 20; // Minimum pause frames
+const PAUSE_TIME_MAX = 80; // Maximum additional random pause frames
+const INFO_BUFFER_MAX = 100;
+const INFO_EXCHANGE_AMOUNT = 1;
+const GOSSIP_RANGE = ANT_SIZE * 6;
+const INFO_ACCUM_RATE = 0.3; // <--- How quickly distance accumulates information
+const GOSSIP_MEMORY_SIZE = 2;  // <--- max number of partners remembered
 
 // --- Global Variables ---
 let ants = [];
@@ -66,7 +71,11 @@ function init() {
       y: startY,
       angle: Math.random() * Math.PI * 2,
       speed: speed,
-      pause: 0 // pause timer in frames
+      pause: 0, // pause timer in frames
+      // --- Information vehicle properties ---
+      infoBuffer: 0,
+      state: "exploration", // or "gossip"
+      gossipPartners: []  // use array as queue
     });
   }
 }
@@ -82,11 +91,10 @@ function drawArena() {
 }
 
 function updateAnts() {
-  // Head-to-head pause detection
+  // Head-to-head pause detection + info exchange
   for (let i = 0; i < ants.length; i++) {
     const antA = ants[i];
     if (antA.pause > 0) continue;
-    // Ant head position
     const ax = antA.x + Math.cos(antA.angle) * ANT_SIZE;
     const ay = antA.y + Math.sin(antA.angle) * ANT_SIZE;
     for (let j = i + 1; j < ants.length; j++) {
@@ -96,12 +104,28 @@ function updateAnts() {
       const by = antB.y + Math.sin(antB.angle) * ANT_SIZE;
       const dx = bx - ax;
       const dy = by - ay;
-      const distSq = dx * dx + dy * dy;
+      const distSq = dx*dx + dy*dy;
       const headDist = ANT_SIZE * 1.5;
-      if (distSq < headDist * headDist) {
-        // Pause both ants for PAUSE_TIME_MIN to PAUSE_TIME_MIN+PAUSE_TIME_MAX frames
-        antA.pause = PAUSE_TIME_MIN + Math.floor(Math.random() * PAUSE_TIME_MAX);
-        antB.pause = PAUSE_TIME_MIN + Math.floor(Math.random() * PAUSE_TIME_MAX);
+      if (distSq < headDist*headDist) {
+        // pause both
+        antA.pause = PAUSE_TIME_MIN + Math.floor(Math.random()*PAUSE_TIME_MAX);
+        antB.pause = PAUSE_TIME_MIN + Math.floor(Math.random()*PAUSE_TIME_MAX);
+
+        // --- info exchange on head-to-head meet ---
+        if (
+          antA.state === "gossip" && antB.state === "gossip" &&
+          antA.infoBuffer > 0 && antB.infoBuffer > 0 &&
+          !antA.gossipPartners.includes(j) && !antB.gossipPartners.includes(i)
+        ) {
+          antA.infoBuffer = Math.max(0, antA.infoBuffer - INFO_EXCHANGE_AMOUNT);
+          antB.infoBuffer = Math.max(0, antB.infoBuffer - INFO_EXCHANGE_AMOUNT);
+          // enqueue j in A's memory
+          if (antA.gossipPartners.length >= GOSSIP_MEMORY_SIZE) antA.gossipPartners.shift();
+          antA.gossipPartners.push(j);
+          // enqueue i in B's memory
+          if (antB.gossipPartners.length >= GOSSIP_MEMORY_SIZE) antB.gossipPartners.shift();
+          antB.gossipPartners.push(i);
+        }
       }
     }
   }
@@ -112,13 +136,76 @@ function updateAnts() {
       ant.pause--;
       continue;
     }
-    // Wander
-    ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
-    // Move
-    const vx = Math.cos(ant.angle) * ant.speed;
-    const vy = Math.sin(ant.angle) * ant.speed;
-    ant.x += vx;
-    ant.y += vy;
+
+    // --- State logic ---
+    if (ant.state === "exploration") {
+      // Wander
+      ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
+      // Move
+      const vx = Math.cos(ant.angle) * ant.speed;
+      const vy = Math.sin(ant.angle) * ant.speed;
+      ant.x += vx;
+      ant.y += vy;
+      // Increase infoBuffer by distance walked, scaled by INFO_ACCUM_RATE
+      ant.infoBuffer += Math.sqrt(vx * vx + vy * vy) * INFO_ACCUM_RATE;
+      if (ant.infoBuffer >= INFO_BUFFER_MAX) {
+        ant.infoBuffer = INFO_BUFFER_MAX;
+        ant.state = "gossip";
+        ant.gossipPartners = [];
+      }
+    } else if (ant.state === "gossip") {
+      // Try to approach the closest ant not in gossipPartners and within GOSSIP_RANGE*3
+      let minDist = Infinity, target = null, targetIdx = -1;
+      for (let j = 0; j < ants.length; j++) {
+        if (i === j) continue;
+        const antB = ants[j];
+        if (ant.gossipPartners.includes(j)) continue;
+        const dx = antB.x - ant.x;
+        const dy = antB.y - ant.y;
+        const distSq = dx * dx + dy * dy;
+        // Only consider as target if antB has info to exchange and hasn't exchanged with ant
+        if (
+          distSq < (GOSSIP_RANGE * 3) * (GOSSIP_RANGE * 3) &&
+          distSq > 1 && // avoid self
+          antB.infoBuffer > 0 &&
+          !antB.gossipPartners?.includes(i) &&
+          distSq < minDist
+        ) {
+          minDist = distSq;
+          target = antB;
+          targetIdx = j;
+        }
+      }
+      // If already exchanged with all possible, wander
+      if (target) {
+        // If already close enough to exchange, don't keep sticking, look for next
+        if (Math.sqrt(minDist) < GOSSIP_RANGE * 1.1) {
+          // Already close, so don't move toward this target anymore
+          ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
+        } else {
+          // Turn toward closest target
+          const desiredAngle = Math.atan2(target.y - ant.y, target.x - ant.x);
+          let da = desiredAngle - ant.angle;
+          while (da > Math.PI) da -= 2 * Math.PI;
+          while (da < -Math.PI) da += 2 * Math.PI;
+          ant.angle += da * 0.2;
+        }
+      } else {
+        // Wander if no target
+        ant.angle += (Math.random() - 0.5) * WANDER_STRENGTH;
+      }
+      // Move (but do NOT accumulate infoBuffer)
+      const vx = Math.cos(ant.angle) * ant.speed;
+      const vy = Math.sin(ant.angle) * ant.speed;
+      ant.x += vx;
+      ant.y += vy;
+      // --- Fix: check if infoBuffer is now <= 0 and switch to exploration ---
+      if (ant.infoBuffer <= 0) {
+        ant.infoBuffer = 0;
+        ant.state = "exploration";
+        ant.gossipPartners = [];
+      }
+    }
     // Boundary check
     const dx = ant.x - centerX;
     const dy = ant.y - centerY;
@@ -168,9 +255,30 @@ function updateAnts() {
 
 function drawAnts() {
   ctx.save();
-  ctx.fillStyle = '#FFFF00';
   for (let i = 0; i < ants.length; i++) {
     const ant = ants[i];
+    // Color by state and infoBuffer
+    let color;
+    if (ant.state === "exploration") {
+      // Blue (hue 220, low buffer) to White (high buffer)
+      const t = ant.infoBuffer / INFO_BUFFER_MAX;
+      // t=0: blue (220,100%,50%), t=1: white (any hue,0%,100%)
+      const hue = 220;
+      const sat = 100 * (1 - t);
+      const light = 50 + 50 * t;
+      color = `hsl(${hue}, ${sat}%, ${light}%)`;
+    } else if (ant.state === "gossip") {
+      // White (low buffer) to Red (hue 0, high buffer)
+      const t = ant.infoBuffer / INFO_BUFFER_MAX;
+      // Interpolate from white (0,0%,100%) to red (0,100%,50%)
+      const hue = 0;
+      const sat = 100 * t;
+      const light = 100 - 50 * t;
+      color = `hsl(${hue}, ${sat}%, ${light}%)`;
+    } else {
+      color = "#FFFF00";
+    }
+    ctx.fillStyle = color;
     // Draw a triangle pointing in the direction of ant.angle
     ctx.save();
     ctx.translate(ant.x, ant.y);
@@ -205,3 +313,4 @@ loop();
 </script>
 </body>
 </html>
+`
