@@ -9,3 +9,9 @@
 * If A finds another ant B, then A and B exchange information (scalar) and decrease their information buffer. 
 * If A's information buffer is still not empty, A will continue to search for another ant C to exchange information with. A will not exchange information with B again, because A already exchanged information with B. 
 * When A's information buffer is empty, A will go back to the exploration state and start walking again. A will clean the list of ants it has already exchanged information with.
+
+# visual angle
+Now make a large revision
+Each ant has its visual angle (scalar). Ants can only see other ants in their visual angle.
+This is angle but not the distance, like 60 degrees.
+This is important. When ants in the gossip state, they will only approach other ants that are within their visual angle to exchange information.

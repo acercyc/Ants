@@ -23,10 +23,10 @@ const BOUNDARY_TURN_NOISE = 0.2;
 const PAUSE_TIME_MIN = 20; // Minimum pause frames
 const PAUSE_TIME_MAX = 80; // Maximum additional random pause frames
 const INFO_BUFFER_MAX = 100;
-const INFO_EXCHANGE_AMOUNT = 1;
+const INFO_EXCHANGE_AMOUNT = 10;
 const GOSSIP_RANGE = ANT_SIZE * 6;
-const INFO_ACCUM_RATE = 0.3; // <--- How quickly distance accumulates information
-const GOSSIP_MEMORY_SIZE = 2;  // <--- max number of partners remembered
+const INFO_ACCUM_RATE = 0.1; // <--- How quickly distance accumulates information
+const GOSSIP_MEMORY_SIZE = 3;  // <--- max number of partners remembered
 
 // --- Global Variables ---
 let ants = [];
